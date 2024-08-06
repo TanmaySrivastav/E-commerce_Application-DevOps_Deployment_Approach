@@ -1,0 +1,160 @@
+pipeline {
+    agent any
+    
+    tools {
+        jdk 'jdk' // Match the name you provided in Global Tool Configuration for JDK
+        maven 'maven' // Match the name you provided in Global Tool Configuration for Maven
+    }
+
+    environment {
+        KUBECONFIG = credentials('k8sconfigpwd') // Reference the kubeconfig credential
+        DEPLOYMENT_LOG = 'deployment_log.txt' // Log file for deployment records
+    }
+    
+    stages {
+        stage('Test Maven') {
+            steps {
+                script {
+                    try {
+                        // Use bat for Windows
+                        bat 'mvn -version'
+                    } catch (Exception e) {
+                        error 'Maven version check failed'
+                    }
+                }
+            }
+        }
+        
+        stage('Checkout Code') {
+    steps {
+        script {
+            try {
+                // Checkout code from GitHub
+                checkout scm
+                // Capture Git commit hash
+                def commitHash = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+                env.GIT_COMMIT = commitHash
+            } catch (Exception e) {
+                error 'Code checkout failed'
+            }
+        }
+    }
+}
+
+        stage('Verify Directory Structure') {
+            steps {
+                script {
+                    try {
+                        // List contents of workspace directory
+                        bat 'dir'
+                        // List contents of the relevant directories
+                        bat 'dir E-Commerce-Application-main'
+                        bat 'dir E-Commerce-Application-main\\ECommerceApplication'
+                    } catch (Exception e) {
+                        error 'Directory verification failed'
+                    }
+                }
+            }
+        }
+
+        stage('Build Maven') {
+            steps {
+                script {
+                    try {
+                        // Ensure we are in the correct directory where the pom.xml is located
+                        dir('E-Commerce-Application-main/ECommerceApplication') {
+                            // Use bat for Windows
+                            bat 'mvn clean install'
+                        }
+                    } catch (Exception e) {
+                        error 'Maven build failed'
+                    }
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    try {
+                        dir('E-Commerce-Application-main/ECommerceApplication') {
+                            // Use lowercase for the Docker image name
+                            bat 'docker build -t tanmayshrivastava/ecommerce-application .'
+                        }
+                    } catch (Exception e) {
+                        error 'Docker build failed'
+                    }
+                }
+            }
+        }
+        
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    try {
+                        // Login to Docker Hub (or your Docker registry)
+                        withCredentials([string(credentialsId: 'dockerhub-pwd', variable: 'dockerhubpwd')]) {
+                            bat "docker login -u tanmayshrivastava -p ${env.dockerhubpwd}"
+                        }
+                        
+                        bat 'docker push tanmayshrivastava/ecommerce-application'
+                    } catch (Exception e) {
+                        error 'Docker push failed'
+                    }
+                }
+            }
+        }
+        
+        stage('Debug Env') {
+            steps {
+                script {
+                    // Print KUBECONFIG environment variable
+                    bat 'echo %KUBECONFIG%'
+                    // Print kubectl configuration to ensure it's correct
+                    bat 'kubectl config view'
+                    // Check if the Kubernetes server address matches
+                    bat 'kubectl cluster-info'
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    try {
+                        // Apply Kubernetes deployment configuration
+                        bat 'kubectl apply -f E-Commerce-Application-main/ECommerceApplication/deploymentservice.yaml'
+                        bat 'kubectl rollout status deployment/spring-boot-k8s-deployment'
+                    } catch (Exception e) {
+                        error 'Kubernetes deployment failed'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                def logMessage = "${new Date().format('yyyy-MM-dd | HH:mm:ss')} | Version: ${env.BUILD_ID} | Commit Hash: ${env.GIT_COMMIT} | Deployment Status: SUCCESS"
+                
+                // Append to deployment_log.txt
+                writeFile file: env.DEPLOYMENT_LOG, text: logMessage + '\n', append: true
+                
+                // Print to Jenkins console
+                echo logMessage
+            }
+        }
+        failure {
+            script {
+                def logMessage = "${new Date().format('yyyy-MM-dd | HH:mm:ss')} | Version: ${env.BUILD_ID} | Commit Hash: ${env.GIT_COMMIT} | Deployment Status: FAIL"
+                
+                // Append to deployment_log.txt
+                writeFile file: env.DEPLOYMENT_LOG, text: logMessage + '\n', append: true
+                
+                // Print to Jenkins console
+                echo logMessage
+            }
+        }
+    }
+}
